@@ -1,0 +1,8 @@
+---
+  output: github_document
+---
+
+```{r, results = "asis", echo = FALSE}
+library(targets)
+cat(c("```mermaid", tar_mermaid(), "```"), sep = "\n")
+```

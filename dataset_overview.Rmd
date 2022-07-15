@@ -1,0 +1,260 @@
+---
+title: "Dataset Overview"
+author: "Matt Brousil"
+date: "`r Sys.Date()`"
+output:
+  html_document:
+    toc: true
+    toc_float: true
+---
+
+<br>
+
+## **Variable definitions**
+
+<br>
+
+The `ticks_w_weather` dataset contains the following variables:
+
++ **`site_id`**: The four-letter NEON site code
++ **`date`**: The first day of the [MMWR week](https://www.cdc.gov/mmwr/index.html) for this row
++ **`jd`**: The Julian date calculated from the `date` column  
++ **`mmwr_year`**: The year of the MMWR week
++ **`mmwr_week`**: The week number of the MMWR week
++ **`mean_temp`**: The mean temperature of the current MMWR week. Calculated by taking the mean of daily mean temperatures
++ **`min_temp`**: The minimum temperature of the current MMWR week. Calculated by taking the minimum of daily minimum temperatures
++ **`max_temp`**: The maximum temperature of the current MMWR week. Calculated by taking the maximum of daily maximum temperatures
++ **`mean_rh`**: The mean relative humidity (%) of the current MMWR week. Calculated by taking the mean of daily mean RH values
++ **`rh_min`**: The minimum relative humidity (%) of the current MMWR week. Calculated by taking the minimum of daily minimum RH values
++ **`rh_max`**: The maximum relative humidity (%) of the current MMWR week. Calculated by taking the maximum of daily maximum RH values
++ **`mean_vpd`**: The mean vapor pressure deficit for the current MMWR week. Calculated by taking the mean of daily mean VPD values
++ **`mean_precip_mm`**: The mean daily precipitation (mm) for the current MMWR week. Calculated by taking the mean of daily precipitation sums
++ **`sum_precip_mm`**: Sum of daily precipitation (mm) for the current MMWR week. Calculated by summing the daily precipitation sums
++ **`dd`**: The average daily degree days accumulated over the current MMWR week
++ **`thirty_day_dd`**: The mean 30-day-rolling-sum of degree days for the current MMWR week. Calculated by taking the mean of daily thirty-day rolling sums
++ **`dd_30d_rollsum_lag34`**: The mean 30-day-rolling-sum of degree days for the MMWR week 34 weeks previous. To calculate: 1) Get `thirty_day_dd` calculations, 2) get the 34-week lagged values of those (i.e., `lag(x = thirty_day_dd, n = 34L)`), 3) average the values for all days in the current MMWR week
++ **`dd_30d_rollsum_lag42`**: Same as `lag_thirty_day_dd_34wk`, but 42 weeks previous
++ **`dd_30d_rollsum_lag50`**: Same as `lag_thirty_day_dd_34wk`, but 50 weeks previous
++ **`dd_30d_rollsum_prev_week`**: This is the thirty-day rolling sum of degree days from the *last day* of the previous MMWR week. No averaging takes place. e.g, if today is Sunday, then this is the 30-day rolling degree day sum of yesterday (Saturday)
++ **`cume_dd_prev_week`**: Similar to `dd_30d_rollsum_prev_week`, except this is the cumulative degree day count (*starting Jan. 1*) of the the last day of the previous MMWR week
++ **`cume_cd_prev_winter`**: The total number of "chill days" (see method below under *Notes*) from September 1st of the preceding year to March 31st of the current year. Values before April 1st use the previous year's accumulations
++ **`amblyomma_americanum`**: The density of *Amblyomma americanum* ticks for the current MMWR week, reported as ticks per 1600m^2^ 
++ **`amam_filled`**: A version of the tick count column above that has been gap filled using linear interpolation
++ **`tick_interp_flag`**: A flag column that indicates whether the week's value for `amam_filled` was observed or interpolated
++ **`amam_4wk_rollmean_lag1`**: The four-week rolling average of the interpolated tick count column, then lagged by one week
++ **`mean_vpd_4wk_rollmean_lag1`**: The four-week rolling average of the `mean_vpd` column, then lagged by one week
++ **`amam_4wk_rollmean_lag50`**: The four-week rolling average of the interpolated tick count column, then lagged by 50 weeks
++ **`mean_vpd_4wk_rollmean_lag50`**: The four-week rolling average of the `mean_vpd` column, then lagged by 50 weeks
+
+<br>
+
+**Notes**:
+
++ *Degree days*: mean(min_temp, max_temp) - 0. Then, if the results is positive, this is the number of `degree days` accumulated that day. Negative values (i.e., temps below 0C) do not count towards this.
++ *Chill days* = 0 - mean(min_temp, max_temp). Then, if the result is positive, this is the number of `chill days` accumulated that day. Negative values (i.e., temps above 0C) do not count towards this. 
+
+
+
+<br>
+
+## **Dataset preview** 
+
+```{r, echo=FALSE}
+tar_read(interpolated_tick_data)$dataset %>%
+  head(10) %>%
+  kable() %>%
+  kable_paper() %>% 
+  scroll_box(width = "800px", height = "500px")
+```
+
+<br>
+
+<br>
+
+---
+
+## **Quality control plots**
+
+<br>
+
+### **Missing data**:
+
+```{r, echo=FALSE}
+tar_read(tick_weather_missing_data_plot)$missing_plot
+```
+
+<br>
+
+### **Variables vs. data source**:
+
+<br>
+
+
+#### **Minimum temp**
+
+**Timeseries**
+
+```{r, echo=FALSE}
+tar_read(temperature_source_comparison_plots)$min_plot
+```
+
+**1:1**
+
+```{r, echo=FALSE, message=FALSE, warning=FALSE, fig.width=7, fig.height=7}
+tar_read(one_to_one_plots)$min_temp_facet_plot +
+    theme(axis.text = element_text(size = 11),
+          axis.title = element_text(size = 13),
+          title = element_text(size = 14),
+          strip.text = element_text(size = 11),
+          legend.position = "bottom")
+```
+
+
+<br>
+
+
+#### **Maximum temp**
+
+**Timeseries**
+
+```{r, echo=FALSE}
+tar_read(temperature_source_comparison_plots)$max_plot
+```
+
+**1:1**
+
+```{r, echo=FALSE, message=FALSE, warning=FALSE, fig.width=7, fig.height=7}
+tar_read(one_to_one_plots)$max_temp_facet_plot +
+    theme(axis.text = element_text(size = 11),
+          axis.title = element_text(size = 13),
+          title = element_text(size = 14),
+          strip.text = element_text(size = 11),
+          legend.position = "bottom")
+```
+
+<br>
+
+
+#### **Minimum RH**
+
+**Timeseries**
+
+```{r, echo=FALSE}
+tar_read(rh_source_comparison_plots)$min_plot
+```
+
+**1:1**
+```{r, echo=FALSE, message=FALSE, warning=FALSE, fig.width=7, fig.height=7}
+tar_read(one_to_one_plots)$min_rh_facet_plot +
+    theme(axis.text = element_text(size = 11),
+          axis.title = element_text(size = 13),
+          title = element_text(size = 14),
+          strip.text = element_text(size = 11),
+          legend.position = "bottom")
+```
+
+<br>
+
+
+#### **Maximum RH**
+
+**Timeseries**
+
+```{r, echo=FALSE}
+tar_read(rh_source_comparison_plots)$max_plot
+```
+
+**1:1**
+
+```{r, echo=FALSE, message=FALSE, warning=FALSE, fig.width=7, fig.height=7}
+tar_read(one_to_one_plots)$max_rh_facet_plot +
+    theme(axis.text = element_text(size = 11),
+          axis.title = element_text(size = 13),
+          title = element_text(size = 14),
+          strip.text = element_text(size = 11),
+          legend.position = "bottom")
+```
+
+
+<br>
+
+
+#### **VPD**
+
+**Timeseries**
+
+```{r, echo=FALSE}
+tar_read(vpd_source_comparison_plot)$vpd_plot
+```
+
+**1:1**
+
+```{r, echo=FALSE, message=FALSE, warning=FALSE, fig.width=7, fig.height=7}
+tar_read(one_to_one_plots)$vpd_facet_plot +
+    theme(axis.text = element_text(size = 11),
+          axis.title = element_text(size = 13),
+          title = element_text(size = 14),
+          strip.text = element_text(size = 11),
+          legend.position = "bottom")
+```
+
+<br>
+
+
+#### **Precip**
+
+**Timeseries**
+
+```{r, echo=FALSE}
+tar_read(precipitation_source_comparison_plot)$precip_plot
+```
+
+**1:1**
+
+```{r, echo=FALSE, message=FALSE, warning=FALSE, fig.width=7, fig.height=7}
+tar_read(one_to_one_plots)$precip_facet_plot +
+    theme(axis.text = element_text(size = 11),
+          axis.title = element_text(size = 13),
+          title = element_text(size = 14),
+          strip.text = element_text(size = 11),
+          legend.position = "bottom")
+```
+
+
+#### **Tick counts**
+
+<br>
+
+
+**Tick count line plot**:
+
+```{r, echo=FALSE}
+tar_read(interpolated_tick_timeseries_plots)$normal_plot
+```
+
+<br>
+
+
+**Raw tick counts overlaid on interpolation**:
+
+```{r, echo=FALSE}
+tar_read(interpolated_tick_timeseries_plots)$color_coded_plot
+```
+
+<br>
+
+
+#### **Chill days**
+
+```{r, echo=FALSE}
+tar_read(chill_day_timeseries_plot)$chill_plot
+```
+
+<br>
+
+
+## **Workflow diagram**
+
+```{r}
+tar_visnetwork()
+```
