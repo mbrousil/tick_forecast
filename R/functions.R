@@ -1426,7 +1426,6 @@ make_one_to_one_plots <- function(daily_neon_temps, daily_neon_rh,
 }
 
 
-
 # Function to download the NOAA GEFS forecast data and arrange it into a data frame
 download_noaa_forecast <- function(tick_counts, start_date, end_date){
   
@@ -1455,5 +1454,108 @@ download_noaa_forecast <- function(tick_counts, start_date, end_date){
   
   return(forecast_df)
 }
+
+
+# Function to aggregate downloaded NOAA GEFS by day and ensemble member. Code
+# adapted from EFI example
+aggregate_noaa <- function(start_date, end_date, target_sites, noaa_forecast) {
+  
+  # A df of all possible dates and locations
+  all_dates <- crossing(site_id = target_sites,
+                        date = seq(from = as_date(start_date),
+                                   to = as_date(end_date),
+                                   by = "1 day"))
+  
+  # Clean up the GEFS data
+  # Unit notes based on netCDF file:
+  # precipitation_flux units: kgm-2s-1 (kg rain passing through 1mx1m square each second)
+  # air_temperature units: K
+  noaa_clean <- noaa_forecast %>% 
+    mutate(date = as_date(time),
+           relative_humidity = relative_humidity * 100,
+           air_temperature = conv_unit(x = air_temperature, from = "K", to = "C"),
+           vpd = RHtoVPD(RH = relative_humidity, TdegC = air_temperature)) %>%
+    rename(site_id = siteID) %>% 
+    mutate(ensemble = as.numeric(stringr::str_sub(ensemble, start = 4, end = 6)))
+  
+  # Major summary stats
+  noaa_future_mean <- noaa_clean %>%
+    group_by(site_id, date, runStartDate, runEndDate, ensemble) %>% 
+    summarize(min_temp = min(air_temperature, na.rm = TRUE),
+              mean_temp = mean(air_temperature, na.rm = TRUE),
+              max_temp = max(air_temperature, na.rm = TRUE),
+              min_rh = min(relative_humidity, na.rm = TRUE),
+              max_rh = max(relative_humidity, na.rm = TRUE),
+              mean_vpd = mean(vpd, na.rm = TRUE)) %>%
+    ungroup()
+  
+  # Precip
+  # https://www.researchgate.net/post/How-to-convert-precipitation-flux-to-mm
+  # 1kg of rain over 1m2 = 1mm
+  # So multiply by number of seconds in the forecast period (6 hr * 60 seconds = 360)
+  # and then add together periods of the day
+  precip_sum <- noaa_clean %>%
+    mutate(precip_accum = 360 * precipitation_flux) %>%
+    group_by(site_id, date, runStartDate, runEndDate, ensemble) %>% 
+    summarize(sum_precip_mm = sum(precip_accum, na.rm = TRUE)) %>%
+    ungroup()
+  
+  noaa_daily <- full_join(x = noaa_future_mean,
+                          y = precip_sum,
+                          by = c("site_id", "date", "runStartDate", "runEndDate", "ensemble"))
+  
+  # Check if anything is missing:
+  noaa_all_dates <- full_join(x = all_dates,
+                              y = noaa_daily,
+                              by = c("site_id", "date"))
+  
+  # There should be multiple unique values per date (site_id * ensemble * runStartDate)
+  # but we'll just check if each day has data
+  date_check <- noaa_all_dates %>%
+    filter(if_any(everything(), is.na))
+  
+  if(nrow(date_check) > 0){
+    
+    warning("Some dates have NA data. This likely indicates incomplete NOAA forecasts.")
+    
+  }
+  
+  return(noaa_all_dates)
+  
+}
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 

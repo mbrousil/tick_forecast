@@ -330,14 +330,6 @@ list(
                                  tick_counts = tick_counts),
              packages = c("tidyverse", "lubridate", "tsibble", "imputeTS", "zoo")),
   
-  # Get the forecasted weather dataset
-  tar_target(noaa_forecast,
-             download_noaa_forecast(tick_counts = tick_counts,
-                                    start_date = "2021-01-01",
-                                    end_date = "2021-09-30"),
-             packages = c("tidyverse", "lubridate", "fable", "tsibble",
-                          "neon4cast")),
-  
   # Create training and test datasets (i.e., partial timeseries) for use in 
   # model fitting
   tar_target(training_and_test_sets,
@@ -370,6 +362,28 @@ list(
                    test_file = test_out_path
                  ))
              }),
+  
+  # Get the forecasted weather dataset (~ two-hour runtime)
+  tar_target(noaa_forecast,
+             download_noaa_forecast(tick_counts = tick_counts,
+                                    start_date = "2021-01-01",
+                                    end_date = "2021-09-30"),
+             packages = c("tidyverse", "lubridate", "fable", "tsibble",
+                          "neon4cast")),
+  
+  # Aggregate NOAA forecast by day and ensemble member
+  tar_target(daily_noaa_forecast,
+             aggregate_noaa(start_date = "2021-01-01",
+                            end_date = "2021-09-30",
+                            target_sites = target_sites,
+                            noaa_forecast = noaa_forecast),
+             packages = c("tidyverse", "plantecophys", "measurements")),
+  
+  
+  
+  
+  
+  
   
   
   # 3. Diagnostic plots for the workflow ------------------------------------
