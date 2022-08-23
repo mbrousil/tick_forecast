@@ -320,7 +320,8 @@ list(
   # include any interpolation of tick counts or forecasts of weather
   tar_target(ticks_w_weather,
              join_ticks_with_weather(weekly_weather_summary = weekly_weather_summary,
-                                     tick_counts = tick_counts),
+                                     tick_counts = tick_counts,
+                                     degree_day_calculations = degree_day_calculations),
              packages = c("tidyverse", "lubridate", "MMWRweek")),
   
   # Carry out linear interpolation of missing tick and some remaining predictor
@@ -380,13 +381,56 @@ list(
              packages = c("tidyverse", "plantecophys", "measurements")),
   
   
+  # 3. Modeling -------------------------------------------------------------
+  
+  # Model specification with exogenous predictors
+  tar_target(model_formula,
+             model_formula <- paste0("amam_filled ~ ",
+                                     # Exogenous vars
+                                     paste("min_temp", "mean_vpd", "sum_precip_mm",
+                                           "cume_dd_prev_week", "amam_4wk_rollmean_lag1",
+                                           "amam_4wk_rollmean_lag50", "mean_vpd_4wk_rollmean_lag1",
+                                           "mean_vpd_4wk_rollmean_lag50", sep = " + ")) %>%
+               as.formula()),
+  
+  tar_target(fable_fits,
+             fit_fable(training_tsibble = training_and_test_sets$training_tsibble,
+                       test_tsibble = training_and_test_sets$test_tsibble,
+                       model_formula = model_formula),
+             packages = c("tidyverse", "tsibble", "fable", "fable.prophet")),
+  
+  tar_target(lightgbm_fits,
+             fit_lightgbm(training_tsibble = training_and_test_sets$training_tsibble,
+                          test_tsibble = training_and_test_sets$test_tsibble,
+                          model_formula = model_formula),
+             packages = c("tidyverse", "tsibble", "parsnip", "bonsai", "Metrics",
+                          "lightgbm")),
+  
+  tar_target(model_averaging_test,
+             average_models(test_tsibble = training_and_test_sets$test_tsibble,
+                            fable_models = fable_fits$models,
+                            fable_accuracy = fable_fits$model_accuracy,
+                            fable_preds = fable_fits$model_predictions,
+                            std_lgb_models = lightgbm_fits$std_models,
+                            std_lgb_accuracy = lightgbm_fits$std_model_accuracy,
+                            full_lgb_models = lightgbm_fits$full_models,
+                            full_lgb_accuracy = lightgbm_fits$full_model_accuracy,
+                            std_lgb_preds = lightgbm_fits$standard_lgb_predictions,
+                            full_lgb_preds = lightgbm_fits$full_lgb_predictions),
+             packages = c("tidyverse", "tsibble", "fable", "parsnip", "bonsai",
+                          "Metrics", "lightgbm")),
+  
+  # Plot the test set observed & predicted values by model
+  tar_target(combined_test_set_forecasts,
+             plot_test_forecasts(full_predictions = model_averaging_test$full_predictions)),
+  
+  # tar_target(production_models),
+  
+  # 4. Forecasting ----------------------------------------------------------
   
   
   
-  
-  
-  
-  # 3. Diagnostic plots for the workflow ------------------------------------
+  # 5. Diagnostic plots for the workflow ------------------------------------
   
   # A plot showing each cell's data type and whether it's NA or not
   tar_target(tick_weather_missing_data_plot,
@@ -484,8 +528,73 @@ list(
                                    gridmet_rh_max = gridmet_rh_max,
                                    gridmet_precip = gridmet_precip)),
   
+  # Plot NOAA weather forecasts to check for gaps
+  tar_target(noaa_temp_plot,
+             {
+               out_path <- "figures/noaa_temp_completion.png"
+               
+               temp_plot <- noaa_forecast %>%
+                 ggplot() +
+                 geom_point(aes(x = time, y = air_temperature)) +
+                 facet_wrap(vars(siteID)) +
+                 theme_bw()
+               
+               ggsave(file = out_path, plot = temp_plot, height = 6, width = 9,
+                      units = "in", dev = "png")
+               
+               return(out_path)
+             }),
   
-  # 4. Reference documents --------------------------------------------------
+  tar_target(noaa_pressure_plot,
+             {
+               out_path <- "figures/noaa_pressure_completion.png"
+               
+               press_plot <- noaa_forecast %>%
+                 ggplot() +
+                 geom_point(aes(x = time, y = air_pressure)) +
+                 facet_wrap(vars(siteID)) +
+                 theme_bw()
+               
+               ggsave(file = out_path, plot = press_plot, height = 6, width = 9,
+                      units = "in", dev = "png")
+               
+               return(out_path)
+             }),
+  
+  tar_target(noaa_rh_plot,
+             {
+               out_path <- "figures/noaa_rh_completion.png"
+               
+               rh_plot <- noaa_forecast %>%
+                 ggplot() +
+                 geom_point(aes(x = time, y = relative_humidity)) +
+                 facet_wrap(vars(siteID)) +
+                 theme_bw()
+               
+               ggsave(file = out_path, plot = rh_plot, height = 6, width = 9,
+                      units = "in", dev = "png")
+               
+               return(out_path)
+             }),
+  
+  tar_target(noaa_precip_plot,
+             {
+               out_path <- "figures/noaa_precip_completion.png"
+               
+               precip_plot <- noaa_forecast %>%
+                 ggplot() +
+                 geom_point(aes(x = time, y = precipitation_flux)) +
+                 facet_wrap(vars(siteID)) +
+                 theme_bw()
+               
+               ggsave(file = out_path, plot = precip_plot, height = 6, width = 9,
+                      units = "in", dev = "png")
+               
+               return(out_path)
+             }),
+  
+  
+  # 6. Reference documents --------------------------------------------------
   
   # An informational document with info on variables in the dataset and
   # diagnostic plots
@@ -500,7 +609,7 @@ list(
              packages = c( "kableExtra", "tidyverse")),  
   
   
-  # 5. File tracking --------------------------------------------------------
+  # 7. File tracking --------------------------------------------------------
   
   # Track the outputs of targets in the workflow that are explicitly exported
   # as files (.csv, .png, etc.)
@@ -582,6 +691,10 @@ list(
   
   tar_file(test_set_path,
            training_and_test_sets$test_file),
+  
+  # Model-related
+  tar_file(test_set_plots,
+           combined_test_set_forecasts),
   
   # Documentation and metadata
   tar_file(dataset_overview_path,

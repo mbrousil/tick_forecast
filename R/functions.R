@@ -581,7 +581,12 @@ calculate_degree_days <- function(interpolated_daily_weather,
                                    fill = NA,
                                    # Move left to right
                                    align = "right"),
+           seven_day_dd = rollsum(x = dd,
+                                  k = 7,
+                                  fill = NA,
+                                  align = "right"),
            lag_thirty_day_dd = lag(x = thirty_day_dd, n = 1L),
+           lag_seven_day_dd = lag(x = seven_day_dd, n = 1L),
            lag_thirty_day_dd_34wk = lag(x = thirty_day_dd, n = 34L),
            lag_thirty_day_dd_50wk = lag(x = thirty_day_dd, n = 50L),
            lag_thirty_day_dd_42wk = lag(x = thirty_day_dd, n = 42L)) %>%
@@ -751,9 +756,12 @@ add_dd_and_aggregate <- function(daily_weather_lagged,
 }
 
 
-# Join ticks to the compiled weather dataset!
+# Join ticks to the compiled weather dataset! Also add in lag_seven_day_dd,
+# because now the dataset will have a date associated with it, which can be
+# used for a join
 join_ticks_with_weather <- function(weekly_weather_summary,
-                                    tick_counts){
+                                    tick_counts,
+                                    degree_day_calculations){
   
   # Join with the weekly tick data:
   ticks_w_weather <- left_join(x = weekly_weather_summary,
@@ -766,6 +774,11 @@ join_ticks_with_weather <- function(weekly_weather_summary,
     # Add column with date of MMWR week start
     mutate(date = MMWRweek2Date(mmwr_year, mmwr_week),
            jd = yday(date)) %>%
+    # Add column with previous seven day sum of DDs
+    left_join(x = .,
+              y = degree_day_calculations %>%
+                select(site_id, date, dd_rollsum_prev_week = lag_seven_day_dd),
+              by = c("site_id", "date")) %>%
     dplyr::select(site_id, date, jd, mmwr_year, mmwr_week, everything())
   
   return(ticks_w_weather)
@@ -808,13 +821,15 @@ interpolate_dataset <- function(ticks_w_weather, tick_counts){
       true = 0, false = amblyomma_americanum)) %>%
     group_by(site_id) %>%
     mutate(
-      across(.cols = where(is.numeric), ~if_else(!is.finite(.), true = NA_real_, false = .)),
+      across(.cols = where(is.numeric),
+             .fns = ~if_else(!is.finite(.), true = NA_real_, false = .)),
       amam_filled = na_interpolation(amam_filled, option = "linear"),
       across(.cols = c("mean_temp", "min_temp", "max_temp", "rh_min",
                        "rh_max", "mean_vpd", "mean_precip_mm",
-                       "sum_precip_mm", "dd", "thirty_day_dd", "lag_thirty_day_dd_34wk",
-                       "lag_thirty_day_dd_42wk", "lag_thirty_day_dd_50wk",
-                       "prev_week_30d_dd", "prev_week_cume_dd", "prev_winter_cume_cd"),
+                       "sum_precip_mm", "dd", "dd_rollsum_prev_week", "thirty_day_dd",
+                       "lag_thirty_day_dd_34wk", "lag_thirty_day_dd_42wk",
+                       "lag_thirty_day_dd_50wk", "prev_week_30d_dd",
+                       "prev_week_cume_dd", "prev_winter_cume_cd"),
              .fns = ~na_interpolation(., option = "linear"))) %>%
     ungroup() %>%
     # Column noting interpolation of tick data
@@ -838,8 +853,14 @@ interpolate_dataset <- function(ticks_w_weather, tick_counts){
       across(.cols = c(amam_filled_4wk_rollmean, mean_vpd_4wk_rollmean),
              .f = ~ lag(x = .x, n = 50L),
              .names = "{.col}_lag50"),
+      # Short term lags of counts
+      amam_lag1 = lag(amam_filled, n = 1L),
+      amam_lag2 = lag(amam_filled, n = 2L),
+      amam_lag3 = lag(amam_filled, n = 3L),
+      amam_lag4 = lag(amam_filled, n = 4L),
       # There's new NAs in these new columns due to the lagging process, so interpolate
-      across(.cols = c(contains("rollmean_lag50"), contains("rollmean_lag1")),
+      across(.cols = c(contains("rollmean_lag50"), contains("rollmean_lag1"),
+                       contains("amam_lag")),
              .fns = ~ na_interpolation(., option = "linear"))) %>%
     ungroup() %>%
     rename(
@@ -1525,14 +1546,369 @@ aggregate_noaa <- function(start_date, end_date, target_sites, noaa_forecast) {
 }
 
 
+# Fit fable-based models
+fit_fable <- function(training_tsibble, test_tsibble, model_formula){
+  
+  # Train models using basic formulations and the specific formula above
+  trained_models <- training_tsibble %>%
+    model(
+      basic_arima = ARIMA(amam_filled, stepwise = FALSE),
+      basic_prophet = prophet(amam_filled),
+      standard_arima = ARIMA(model_formula, stepwise = FALSE),
+      standard_prophet = prophet(model_formula),
+    )                  
+  
+  # Get forecast accuracy metrics
+  model_predictions <- trained_models %>%
+    forecast(new_data = test_tsibble)
+  
+  model_accuracy <- model_predictions %>%
+    fabletools::accuracy(data = bind_rows(training_tsibble, test_tsibble)) %>%
+    select(.model, site_id, rmse = RMSE, mae = MAE)
+  
+  
+  return(list(
+    model_accuracy = model_accuracy,
+    models = trained_models,
+    model_predictions = model_predictions
+  ))
+  
+}
+
+
+# Fit lightGBM-based models
+fit_lightgbm <- function(training_tsibble, test_tsibble, model_formula){
+  
+  # lightGBM version (not using tsibbles because not a time series method)
+  # Split train and test into lists of data frames, because each site needs to be
+  # modeled separately
+  tick_train_list <- training_tsibble %>%
+    as_tibble() %>%
+    split(f = .$site_id)
+  
+  tick_test_list <- test_tsibble %>%
+    as_tibble() %>%
+    split(f = .$site_id)
+  
+  
+  # Standard fit ------------------------------------------------------------
+  
+  # First, the "standard" lightGBMs based on our model formula:
+  standard_lgb_fits <- map(.x = tick_train_list,
+                           .f = ~ boost_tree() %>%
+                             set_engine(engine = "lightgbm") %>%
+                             set_mode(mode = "regression") %>%
+                             fit(
+                               formula = model_formula, 
+                               data = .x))
+  
+  # We'll only get point estimates, not intervals for lightgbm method
+  standard_lgb_predicts <- pmap(.l = list(..1 = standard_lgb_fits,
+                                          ..2 = tick_test_list,
+                                          ..3 = names(tick_test_list)),
+                                .f = ~ predict(object = ..1,
+                                               new_data = ..2) %>%
+                                  mutate(site_id = ..3) %>%
+                                  bind_cols(., date = ..2$date,
+                                            amam_filled = ..2$amam_filled) %>%
+                                  rename(lgb_pred = .pred))
+  
+  standard_lgb_accuracy <- map_df(.x = standard_lgb_predicts,
+                                  .f = ~ tibble(
+                                    site_id = unique(.x$site_id),
+                                    rmse = rmse(actual = .x$amam_filled,
+                                                predicted = .x$lgb_pred),
+                                    mae = mae(actual = .x$amam_filled,
+                                              predicted = .x$lgb_pred),
+                                    .model = "std_lgb"
+                                  ))
+  
+  
+  # Full fit ----------------------------------------------------------------
+  
+  # Given that tree methods are generally robust to multicollinearity, we'll add a
+  # modeling option with lightGBM using all potential predictors:
+  expanded_train_list <- map(.x = tick_train_list,
+                             .f = ~ .x %>%
+                               # # Short-term lags of tick counts:
+                               # mutate(amam_lag1 = lag(amam_filled, n = 1L),
+                               #        amam_lag2 = lag(amam_filled, n = 2L),
+                               #        amam_lag3 = lag(amam_filled, n = 3L),
+                               #        amam_lag4 = lag(amam_filled, n = 4L)) %>%
+                               select(date, amam_filled, mmwr_week, mean_temp,
+                                      min_temp, max_temp, rh_min, rh_max,
+                                      mean_vpd, mean_precip_mm, sum_precip_mm,
+                                      dd, thirty_day_dd, dd_30d_rollsum_lag34,
+                                      dd_30d_rollsum_lag42, dd_30d_rollsum_lag50,
+                                      dd_30d_rollsum_prev_week, cume_dd_prev_week,
+                                      cume_cd_prev_winter,
+                                      dd_rollsum_prev_week,
+                                      tick_interp_flag, amam_4wk_rollmean_lag1,
+                                      mean_vpd_4wk_rollmean_lag1, amam_4wk_rollmean_lag50,
+                                      mean_vpd_4wk_rollmean_lag50, contains("amam_lag")))
+  
+  expanded_test_list <- map(.x = tick_test_list,
+                            .f = ~ .x %>%
+                              # mutate(amam_lag1 = lag(amam_filled, n = 1L),
+                              #        amam_lag2 = lag(amam_filled, n = 2L),
+                              #        amam_lag3 = lag(amam_filled, n = 3L),
+                              #        amam_lag4 = lag(amam_filled, n = 4L)) %>%
+                              select(date, amam_filled, mmwr_week, mean_temp,
+                                     min_temp, max_temp, rh_min, rh_max,
+                                     mean_vpd, mean_precip_mm, sum_precip_mm,
+                                     dd, thirty_day_dd, dd_30d_rollsum_lag34,
+                                     dd_30d_rollsum_lag42, dd_30d_rollsum_lag50,
+                                     dd_30d_rollsum_prev_week, cume_dd_prev_week,
+                                     cume_cd_prev_winter, dd_rollsum_prev_week,
+                                     tick_interp_flag, amam_4wk_rollmean_lag1,
+                                     mean_vpd_4wk_rollmean_lag1, amam_4wk_rollmean_lag50,
+                                     mean_vpd_4wk_rollmean_lag50, contains("amam_lag")))
+  
+  
+  # Next, a fit with all possible predictors:
+  full_lgb_fits <- map(.x = expanded_train_list,
+                       .f = ~ boost_tree() %>%
+                         set_engine(engine = "lightgbm") %>%
+                         set_mode(mode = "regression") %>%
+                         fit(
+                           formula = amam_filled ~ ., 
+                           data = .x %>%
+                             select(-date)))
+  
+  # Variable importance from the new lightGBM fits
+  full_lgb_imp <- map2(.x = full_lgb_fits,
+                       .y = names(full_lgb_fits),
+                       .f = ~ lgb.importance(.x$fit) %>%
+                         mutate(site_id = .y))
+  
+  
+  # Plot variable importance
+  full_lgb_imp_plots <- map2(.x = full_lgb_imp,
+                             .y = names(full_lgb_imp),
+                             .f = ~
+                               ggplot(data = .x) +
+                               geom_segment(aes(x = reorder(Feature, Gain), y = 0,
+                                                xend = reorder(Feature, Gain), yend = Gain * 100), 
+                                            size = 1, alpha = 0.7) +
+                               geom_point(aes(x = Feature, y = Gain * 100), 
+                                          size = 2, show.legend = F, color = "blue") +
+                               coord_flip() +
+                               ggtitle(paste0("Site: ", .y)) +
+                               xlab("Feature") +
+                               ylab("Gain (%)") +
+                               ylim(c(0, 100)) +
+                               theme_bw() +
+                               theme(text = element_text(size = 12),
+                                     axis.text.y = element_text(margin = ggplot2::margin(r = 7)),
+                                     panel.border = element_rect(fill = NA,
+                                                                 colour = "black", 
+                                                                 size = 1)))
+  
+  full_lgb_panel_imp <- ggpubr::ggarrange(plotlist = full_lgb_imp_plots)
+  
+  importance_out_path <- "figures/full_lgb_var_imp_panels.png"
+  
+  ggsave(filename = importance_out_path,
+         plot = full_lgb_panel_imp, device = "png",
+         width = 16, height = 12, units = "in")
+  
+  # Predictions from expanded lightGBM method:
+  full_lgb_predicts <- pmap(.l = list(..1 = full_lgb_fits,
+                                      ..2 = expanded_test_list,
+                                      ..3 = names(expanded_test_list)),
+                            .f = ~predict(object = ..1,
+                                          new_data = ..2) %>%
+                              mutate(site_id = ..3) %>%
+                              bind_cols(., date = ..2$date,
+                                        amam_filled = ..2$amam_filled) %>%
+                              rename(lgb_pred = .pred))
+  
+  # lightGBM accuracies:
+  full_lgb_accuracy <- map_df(.x = full_lgb_predicts,
+                              .f = ~ tibble(
+                                site_id = unique(.x$site_id),
+                                rmse = rmse(actual = .x$amam_filled,
+                                            predicted = .x$lgb_pred),
+                                mae = mae(actual = .x$amam_filled,
+                                          predicted = .x$lgb_pred),
+                                .model = "full_lgb"
+                              ))
+  
+  return(list(
+    expanded_lgb_training_data = expanded_train_list,
+    expanded_lgb_test_data = expanded_test_list,
+    importance_out_path = importance_out_path,
+    std_model_accuracy = standard_lgb_accuracy,
+    std_models = standard_lgb_fits,
+    standard_lgb_predictions = standard_lgb_predicts,
+    full_model_accuracy = full_lgb_accuracy,
+    full_models = full_lgb_fits,
+    full_lgb_predictions = full_lgb_predicts
+  ))
+  
+}
+
+
+average_models <- function(fable_models, fable_accuracy, fable_preds,
+                           std_lgb_models, std_lgb_accuracy, full_lgb_models,
+                           full_lgb_accuracy, std_lgb_preds, full_lgb_preds,
+                           test_tsibble){
+  
+  tick_test <- as_tibble(test_tsibble)
+  
+  
+  model_predictions <- bind_rows(
+    fable_preds %>%
+      .[, c(1, 2, 3, 5)] %>%
+      rename(model_pred = .mean),
+    
+    map_df(.x = std_lgb_preds, .f = ~.x) %>%
+      transmute(site_id, .model = "std_lgb", model_pred = lgb_pred, date),
+    
+    map_df(.x = full_lgb_preds, .f = ~.x) %>%
+      transmute(site_id, .model = "full_lgb", model_pred = lgb_pred, date)
+  )
+  
+  model_accuracies <- bind_rows(
+    fable_accuracy,
+    std_lgb_accuracy,
+    full_lgb_accuracy
+  )
+  
+  preds_w_error <- model_predictions %>%
+    left_join(x = .,
+              y = model_accuracies,
+              by = c("site_id", ".model")) %>%
+    left_join(x = .,
+              y = tick_test %>%
+                select(site_id, date, amam_filled),
+              by = c("site_id", "date"))
+  
+  # Top 3 models by RMSE for each site:
+  top_3_mods <- model_accuracies %>%
+    group_by(site_id) %>%
+    slice_min(order_by = rmse, n = 3)
+  
+  # Carry out averaging:
+  averaged <- preds_w_error %>%
+    as_tibble() %>%
+    # Keep only model outputs that are in the top 3
+    semi_join(x = .,
+              y = top_3_mods,
+              by = c("site_id", ".model")) %>%
+    group_by(site_id, date) %>%
+    summarize(top_3_mean_pred = mean(model_pred, na.rm = TRUE),
+              # Using 1/rmse because large rmse = bad
+              top_3_w_mean_pred = weighted.mean(x = model_pred, w = 1 / rmse)) %>%
+    ungroup()
+  
+  
+  unweighted_mean_accuracy <- averaged %>%
+    left_join(x = .,
+              y = tick_test %>%
+                select(site_id, date, amam_filled),
+              by = c("site_id", "date")) %>%
+    split(f = .$site_id) %>%
+    map_df(.f = ~ tibble(
+      site_id = unique(.x$site_id),
+      rmse_mean = rmse(actual = .x$amam_filled,
+                       predicted = .x$top_3_mean_pred),
+      mae_mean = mae(actual = .x$amam_filled,
+                     predicted = .x$top_3_mean_pred),
+      .model = "unweighted_average"
+      
+    ))
+  
+  weighted_mean_accuracy <- averaged %>%
+    left_join(x = .,
+              y = tick_test %>%
+                select(site_id, date, amam_filled),
+              by = c("site_id", "date")) %>%
+    split(f = .$site_id) %>%
+    map_df(.f = ~ tibble(
+      site_id = unique(.x$site_id),
+      rmse_w_mean = rmse(actual = .x$amam_filled,
+                         predicted = .x$top_3_w_mean_pred),
+      mae_w_mean = mae(actual = .x$amam_filled,
+                       predicted = .x$top_3_w_mean_pred),
+      .model = "weighted_average"
+    ))
+  
+  
+  # All predictions, error, observed counts for the test set:
+  full_predictions <- averaged %>%
+    rename(unweighted_average = top_3_mean_pred,
+           weighted_average = top_3_w_mean_pred) %>%
+    pivot_longer(names_to = ".model",
+                 values_to = "model_pred",
+                 contains("_average")) %>%
+    left_join(x = .,
+              y = bind_rows(
+                rename(weighted_mean_accuracy,
+                       rmse = rmse_w_mean,
+                       mae = mae_w_mean),
+                rename(unweighted_mean_accuracy,
+                       rmse = rmse_mean,
+                       mae = mae_mean)),
+              by = c("site_id", ".model")
+    ) %>%
+    left_join(x = .,
+              y = tick_test %>%
+                select(site_id, date, amam_filled),
+              by = c("site_id", "date")) %>%
+    bind_rows(preds_w_error)
+  
+  
+  
+  return(list(
+    full_predictions = full_predictions,
+    unweighted_mean_accuracy = unweighted_mean_accuracy,
+    weighted_mean_accuracy = weighted_mean_accuracy
+  ))
+  
+}
+
+
+plot_test_forecasts <- function(full_predictions){
+  
+  # Plotting
+  forecast_plot <- ggplot(data = full_predictions) +
+    geom_line(aes(x = date, y = amam_filled, alpha = ""),
+              linetype = "dashed", size = 0.75, color = "black") +
+    geom_line(aes(x = date, y = model_pred, color = .model), size = 0.5) +
+    facet_wrap(vars(site_id), scales = "free_y") +
+    xlab("Date") +
+    ylab("Tick density") +
+    scale_color_discrete("Model") +
+    scale_alpha_manual("Observed", values = 1) +
+    scale_x_date(date_breaks = "3 months", date_labels = "%b-'%y") +
+    theme_bw() +
+    theme(axis.text.x = element_text(angle = 30, hjust = 1))
+  
+  out_path <- "figures/test_forecast_plot.png"
+  
+  ggsave(filename = out_path,
+         plot = forecast_plot, device = "png",
+         width = 12, height = 8, units = "in")
+  
+}
 
 
 
 
 
-
-
-
+# # Forecast to test time period and plot
+# tick_forecasts <- trained_models %>%
+#   forecast(new_data = test_tsibble) %>%
+#   autoplot(test_tsibble, level = NULL) +
+#   facet_wrap(vars(site_id), ncol = 2, scales = "free_y") +
+#   theme_bw()
+# 
+# forecast_out_path <- "figures/tick_fable_forecasts.png"
+# 
+# ggsave(filename = forecast_out_path,
+#        plot = tick_forecasts, device = "png",
+#        width = 6, height = 8, units = "in")
 
 
 
