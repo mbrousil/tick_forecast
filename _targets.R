@@ -34,8 +34,10 @@ list(
   
   # EFI-processed tick data:
   tar_target(tick_counts,
-             read_csv("https://data.ecoforecast.org/targets/ticks/ticks-targets.csv.gz",
-                      guess_max = 1e6)),
+             readr::read_csv("https://data.ecoforecast.org/neon4cast-targets/ticks/ticks-targets.csv.gz",
+                             guess_max = 1e6) %>%
+               mutate(iso_week_num = isoweek(time)) %>%
+               pivot_wider(names_from = "variable", values_from = "observed")),
   
   # Note, these steps take an hour or more:
   
@@ -229,7 +231,7 @@ list(
                # want to have degree days from the previous year (e.g., in the
                # event that we used lagged variables similar to some studies)
                date_summary <- tick_counts %>%
-                 group_by(siteID) %>%
+                 group_by(site_id) %>%
                  summarize(min_date = min(time),
                            max_date = max(time)) %>%
                  mutate(min_year = year(min_date),
@@ -238,7 +240,7 @@ list(
                         end_date = ymd(paste0(max_year, "-12-31")))  
                
                potential_dates <- date_summary %>%
-                 distinct(site_id = siteID, start_date, end_date) %>%
+                 distinct(site_id, start_date, end_date) %>%
                  split(sort(as.numeric(rownames(.)))) %>%
                  map_df(.x = .,
                         .f = ~ {
@@ -322,7 +324,7 @@ list(
              join_ticks_with_weather(weekly_weather_summary = weekly_weather_summary,
                                      tick_counts = tick_counts,
                                      degree_day_calculations = degree_day_calculations),
-             packages = c("tidyverse", "lubridate", "MMWRweek")),
+             packages = c("tidyverse", "lubridate", "ISOweek")),
   
   # Carry out linear interpolation of missing tick and some remaining predictor
   # data, and return a tsibble and csv
@@ -365,20 +367,20 @@ list(
              }),
   
   # Get the forecasted weather dataset (~ two-hour runtime)
-  tar_target(noaa_forecast,
-             download_noaa_forecast(tick_counts = tick_counts,
-                                    start_date = "2021-01-01",
-                                    end_date = "2021-09-30"),
-             packages = c("tidyverse", "lubridate", "fable", "tsibble",
-                          "neon4cast")),
-  
-  # Aggregate NOAA forecast by day and ensemble member
-  tar_target(daily_noaa_forecast,
-             aggregate_noaa(start_date = "2021-01-01",
-                            end_date = "2021-09-30",
-                            target_sites = target_sites,
-                            noaa_forecast = noaa_forecast),
-             packages = c("tidyverse", "plantecophys", "measurements")),
+  # tar_target(noaa_forecast,
+  #            download_noaa_forecast(tick_counts = tick_counts,
+  #                                   start_date = "2021-01-01",
+  #                                   end_date = "2021-09-30"),
+  #            packages = c("tidyverse", "lubridate", "fable", "tsibble",
+  #                         "neon4cast")),
+  # 
+  # # Aggregate NOAA forecast by day and ensemble member
+  # tar_target(daily_noaa_forecast,
+  #            aggregate_noaa(start_date = "2021-01-01",
+  #                           end_date = "2021-09-30",
+  #                           target_sites = target_sites,
+  #                           noaa_forecast = noaa_forecast),
+  #            packages = c("tidyverse", "plantecophys", "measurements")),
   
   
   # 3. Modeling -------------------------------------------------------------
@@ -529,70 +531,70 @@ list(
                                    gridmet_precip = gridmet_precip)),
   
   # Plot NOAA weather forecasts to check for gaps
-  tar_target(noaa_temp_plot,
-             {
-               out_path <- "figures/noaa_temp_completion.png"
-               
-               temp_plot <- noaa_forecast %>%
-                 ggplot() +
-                 geom_point(aes(x = time, y = air_temperature)) +
-                 facet_wrap(vars(siteID)) +
-                 theme_bw()
-               
-               ggsave(file = out_path, plot = temp_plot, height = 6, width = 9,
-                      units = "in", dev = "png")
-               
-               return(out_path)
-             }),
-  
-  tar_target(noaa_pressure_plot,
-             {
-               out_path <- "figures/noaa_pressure_completion.png"
-               
-               press_plot <- noaa_forecast %>%
-                 ggplot() +
-                 geom_point(aes(x = time, y = air_pressure)) +
-                 facet_wrap(vars(siteID)) +
-                 theme_bw()
-               
-               ggsave(file = out_path, plot = press_plot, height = 6, width = 9,
-                      units = "in", dev = "png")
-               
-               return(out_path)
-             }),
-  
-  tar_target(noaa_rh_plot,
-             {
-               out_path <- "figures/noaa_rh_completion.png"
-               
-               rh_plot <- noaa_forecast %>%
-                 ggplot() +
-                 geom_point(aes(x = time, y = relative_humidity)) +
-                 facet_wrap(vars(siteID)) +
-                 theme_bw()
-               
-               ggsave(file = out_path, plot = rh_plot, height = 6, width = 9,
-                      units = "in", dev = "png")
-               
-               return(out_path)
-             }),
-  
-  tar_target(noaa_precip_plot,
-             {
-               out_path <- "figures/noaa_precip_completion.png"
-               
-               precip_plot <- noaa_forecast %>%
-                 ggplot() +
-                 geom_point(aes(x = time, y = precipitation_flux)) +
-                 facet_wrap(vars(siteID)) +
-                 theme_bw()
-               
-               ggsave(file = out_path, plot = precip_plot, height = 6, width = 9,
-                      units = "in", dev = "png")
-               
-               return(out_path)
-             }),
-  
+  # tar_target(noaa_temp_plot,
+  #            {
+  #              out_path <- "figures/noaa_temp_completion.png"
+  #              
+  #              temp_plot <- noaa_forecast %>%
+  #                ggplot() +
+  #                geom_point(aes(x = time, y = air_temperature)) +
+  #                facet_wrap(vars(site_id)) +
+  #                theme_bw()
+  #              
+  #              ggsave(file = out_path, plot = temp_plot, height = 6, width = 9,
+  #                     units = "in", dev = "png")
+  #              
+  #              return(out_path)
+  #            }),
+  # 
+  # tar_target(noaa_pressure_plot,
+  #            {
+  #              out_path <- "figures/noaa_pressure_completion.png"
+  #              
+  #              press_plot <- noaa_forecast %>%
+  #                ggplot() +
+  #                geom_point(aes(x = time, y = air_pressure)) +
+  #                facet_wrap(vars(site_id)) +
+  #                theme_bw()
+  #              
+  #              ggsave(file = out_path, plot = press_plot, height = 6, width = 9,
+  #                     units = "in", dev = "png")
+  #              
+  #              return(out_path)
+  #            }),
+  # 
+  # tar_target(noaa_rh_plot,
+  #            {
+  #              out_path <- "figures/noaa_rh_completion.png"
+  #              
+  #              rh_plot <- noaa_forecast %>%
+  #                ggplot() +
+  #                geom_point(aes(x = time, y = relative_humidity)) +
+  #                facet_wrap(vars(site_id)) +
+  #                theme_bw()
+  #              
+  #              ggsave(file = out_path, plot = rh_plot, height = 6, width = 9,
+  #                     units = "in", dev = "png")
+  #              
+  #              return(out_path)
+  #            }),
+  # 
+  # tar_target(noaa_precip_plot,
+  #            {
+  #              out_path <- "figures/noaa_precip_completion.png"
+  #              
+  #              precip_plot <- noaa_forecast %>%
+  #                ggplot() +
+  #                geom_point(aes(x = time, y = precipitation_flux)) +
+  #                facet_wrap(vars(site_id)) +
+  #                theme_bw()
+  #              
+  #              ggsave(file = out_path, plot = precip_plot, height = 6, width = 9,
+  #                     units = "in", dev = "png")
+  #              
+  #              return(out_path)
+  #            }),
+  # 
   
   # 6. Reference documents --------------------------------------------------
   

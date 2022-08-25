@@ -692,10 +692,10 @@ add_dd_and_aggregate <- function(daily_weather_lagged,
       date %within% lubridate::interval("2021-04-01", "2022-03-31") ~ "2020-2021")) %>%
     # Re-run the year column to make sure no NAs and add the MMWR week
     mutate(year = year(date),
-           mmwr_year = epiyear(date),
-           mmwr_week = epiweek(date)) %>%
+           iso_year = isoyear(date),
+           iso_week = isoweek(date)) %>%
     # Rearrange cols
-    dplyr::select(site_id, date, year, mmwr_year, mmwr_week, winter_season,
+    dplyr::select(site_id, date, year, iso_year, iso_week, winter_season,
                   everything())
   
   # A little cleaning needs to be done with the chill days, so we'll do this separately:
@@ -707,14 +707,14 @@ add_dd_and_aggregate <- function(daily_weather_lagged,
     # Now for each site, year, week we will use the chill data for the first date
     # of that week, to avoid ambiguities over which date's data should be used
     # when the MMWR week falls on the March 31/April 1 threshold
-    group_by(site_id, mmwr_year, mmwr_week) %>%
+    group_by(site_id, iso_year, iso_week) %>%
     filter(date == min(date)) %>%
-    distinct(site_id, mmwr_year, mmwr_week, total_cd)
+    distinct(site_id, iso_year, iso_week, total_cd)
   
   # Also going to grab lagged values by week so that we can use the previous week's
   # (end of week) values for two of the DD variables
   dd_weekly <- degree_day_calculations %>%
-    group_by(site_id, mmwr_year = epiyear(date), mmwr_week = epiweek(date)) %>%
+    group_by(site_id, iso_year = isoyear(date), iso_week = isoweek(date)) %>%
     filter(date == max(date)) %>%
     dplyr::select(thirty_day_dd, cume_dd) %>%
     ungroup() 
@@ -730,7 +730,7 @@ add_dd_and_aggregate <- function(daily_weather_lagged,
   # Now we need to aggregate the dataset to one value per MMWR week
   weekly_weather <- daily_weather_w_dd %>%
     # Now we aggregate by site*year*week:
-    group_by(site_id, mmwr_year, mmwr_week) %>%
+    group_by(site_id, iso_year, iso_week) %>%
     summarize(
       mean_temp = mean(mean_temp, na.rm = TRUE),
       min_temp = min(min_temp, na.rm = TRUE),
@@ -749,7 +749,7 @@ add_dd_and_aggregate <- function(daily_weather_lagged,
     # Join in the two remaining DD and CD weekly dataframes
     reduce(.x = list(., dd_weekly_lag, weekly_chill),
            .f = left_join,
-           by = c("site_id", "mmwr_year", "mmwr_week")) %>%
+           by = c("site_id", "iso_year", "iso_week")) %>%
     rename(prev_winter_cume_cd = total_cd)
   
   return(weekly_weather)
@@ -764,22 +764,26 @@ join_ticks_with_weather <- function(weekly_weather_summary,
                                     degree_day_calculations){
   
   # Join with the weekly tick data:
-  ticks_w_weather <- left_join(x = weekly_weather_summary,
+  ticks_w_weather <- left_join(x = weekly_weather_summary %>%
+                                 rename(iso_week_num = iso_week),
                                y = tick_counts %>%
-                                 mutate(mmwr_year = year(time)),
-                               by = c("site_id" = "siteID",
-                                      "mmwr_year",
-                                      "mmwr_week" = "mmwrWeek")) %>%
+                                 mutate(iso_year = year(time)),
+                               by = c("site_id" = "site_id",
+                                      "iso_year",
+                                      "iso_week_num")) %>%
     dplyr::select(-time) %>%
     # Add column with date of MMWR week start
-    mutate(date = MMWRweek2Date(mmwr_year, mmwr_week),
+    mutate(date = paste0(iso_year, "-W",
+                         str_pad(string = iso_week_num, width = 2, side = "left", pad = "0"),
+                         "-1"),
+           date = ISOweek2date(date),
            jd = yday(date)) %>%
     # Add column with previous seven day sum of DDs
     left_join(x = .,
               y = degree_day_calculations %>%
                 select(site_id, date, dd_rollsum_prev_week = lag_seven_day_dd),
               by = c("site_id", "date")) %>%
-    dplyr::select(site_id, date, jd, mmwr_year, mmwr_week, everything())
+    dplyr::select(site_id, date, jd, iso_year, iso_week, everything())
   
   return(ticks_w_weather)
   
@@ -792,7 +796,7 @@ interpolate_dataset <- function(ticks_w_weather, tick_counts){
   
   # Earliest observations from each site, which will be used to filter the results
   tick_start_dates <- tick_counts %>%
-    group_by(site_id = siteID) %>%
+    group_by(site_id = site_id) %>%
     summarize(start_date = min(time)) %>%
     ungroup()
   
@@ -1457,7 +1461,7 @@ download_noaa_forecast <- function(tick_counts, start_date, end_date){
   
   # Download the NOAA forecast datasets, day-by-day
   walk(.x = forecast_dates,
-       .f = ~ download_noaa(siteID = unique(tick_counts$siteID),
+       .f = ~ download_noaa(site_id = unique(tick_counts$site_id),
                             date = .x,
                             dir = "data/noaa_forecasts/"))
   
@@ -1496,7 +1500,7 @@ aggregate_noaa <- function(start_date, end_date, target_sites, noaa_forecast) {
            relative_humidity = relative_humidity * 100,
            air_temperature = conv_unit(x = air_temperature, from = "K", to = "C"),
            vpd = RHtoVPD(RH = relative_humidity, TdegC = air_temperature)) %>%
-    rename(site_id = siteID) %>% 
+    rename(site_id = site_id) %>% 
     mutate(ensemble = as.numeric(stringr::str_sub(ensemble, start = 4, end = 6)))
   
   # Major summary stats
@@ -1635,7 +1639,7 @@ fit_lightgbm <- function(training_tsibble, test_tsibble, model_formula){
                                #        amam_lag2 = lag(amam_filled, n = 2L),
                                #        amam_lag3 = lag(amam_filled, n = 3L),
                                #        amam_lag4 = lag(amam_filled, n = 4L)) %>%
-                               select(date, amam_filled, mmwr_week, mean_temp,
+                               select(date, amam_filled, iso_week, mean_temp,
                                       min_temp, max_temp, rh_min, rh_max,
                                       mean_vpd, mean_precip_mm, sum_precip_mm,
                                       dd, thirty_day_dd, dd_30d_rollsum_lag34,
@@ -1653,7 +1657,7 @@ fit_lightgbm <- function(training_tsibble, test_tsibble, model_formula){
                               #        amam_lag2 = lag(amam_filled, n = 2L),
                               #        amam_lag3 = lag(amam_filled, n = 3L),
                               #        amam_lag4 = lag(amam_filled, n = 4L)) %>%
-                              select(date, amam_filled, mmwr_week, mean_temp,
+                              select(date, amam_filled, iso_week, mean_temp,
                                      min_temp, max_temp, rh_min, rh_max,
                                      mean_vpd, mean_precip_mm, sum_precip_mm,
                                      dd, thirty_day_dd, dd_30d_rollsum_lag34,
@@ -1673,7 +1677,7 @@ fit_lightgbm <- function(training_tsibble, test_tsibble, model_formula){
                          fit(
                            formula = amam_filled ~ ., 
                            data = .x %>%
-                             select(-date)))
+                             select(-c(date, iso_week))))
   
   # Variable importance from the new lightGBM fits
   full_lgb_imp <- map2(.x = full_lgb_fits,
