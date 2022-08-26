@@ -366,21 +366,43 @@ list(
                  ))
              }),
   
-  # Get the forecasted weather dataset (~ two-hour runtime)
-  # tar_target(noaa_forecast,
-  #            download_noaa_forecast(tick_counts = tick_counts,
-  #                                   start_date = "2021-01-01",
-  #                                   end_date = "2021-09-30"),
-  #            packages = c("tidyverse", "lubridate", "fable", "tsibble",
-  #                         "neon4cast")),
-  # 
-  # # Aggregate NOAA forecast by day and ensemble member
-  # tar_target(daily_noaa_forecast,
-  #            aggregate_noaa(start_date = "2021-01-01",
-  #                           end_date = "2021-09-30",
-  #                           target_sites = target_sites,
-  #                           noaa_forecast = noaa_forecast),
-  #            packages = c("tidyverse", "plantecophys", "measurements")),
+  # What date to begin pulling weather forecasts
+  tar_target(forecast_start_date,
+             {
+               
+               forecast_week <- Sys.Date() %>%
+                 isoweek()
+               
+               forecast_year <- Sys.Date() %>%
+                 year(.) - 1
+               
+               forecast_start_date <- ISOweek2date(paste0(forecast_year, "-W", forecast_week, "-1"))
+               
+               return(forecast_start_date)
+               
+             },
+             packages = c("tidyverse", "ISOweek", "lubridate")),
+  
+  # Get the forecasted weather dataset
+  tar_target(noaa_forecast,
+             download_noaa_forecast(forecast_start_date = as.character(forecast_start_date),
+                                    tick_counts = tick_counts),
+             packages = c("tidyverse", "neon4cast", "neon4cast")),
+  
+  # Aggregate NOAA forecast by day and ensemble member
+  tar_target(daily_noaa_forecast,
+             aggregate_noaa(start_date = forecast_start_date,
+                            end_date = forecast_start_date + days(35),
+                            target_sites = target_sites,
+                            noaa_forecast = noaa_forecast),
+             packages = c("tidyverse", "plantecophys", "measurements",
+                          "lubridate")),
+  
+  # Reconcile forecasted dataset structure with observed dataset structure
+  tar_target(observed_plus_forecasted_data,
+             reconcile_noaa_timeseries(interpolated_tick_data = interpolated_tick_data,
+                                       daily_noaa_forecast = daily_noaa_forecast),
+             packages = c()),
   
   
   # 3. Modeling -------------------------------------------------------------

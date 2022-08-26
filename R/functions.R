@@ -1452,33 +1452,25 @@ make_one_to_one_plots <- function(daily_neon_temps, daily_neon_rh,
 
 
 # Function to download the NOAA GEFS forecast data and arrange it into a data frame
-download_noaa_forecast <- function(tick_counts, start_date, end_date){
+download_noaa_forecast <- function(forecast_start_date, tick_counts){
   
-  # Create sequence of dates to download
-  forecast_dates <- seq(from = as_date(start_date),
-                        to = as_date(end_date),
-                        by = "day")
+  # Sites to query
+  sites <- unique(tick_counts$site_id)
   
-  # Download the NOAA forecast datasets, day-by-day
-  walk(.x = forecast_dates,
-       .f = ~ download_noaa(site_id = unique(tick_counts$site_id),
-                            date = .x,
-                            dir = "data/noaa_forecasts/"))
+  # Build request for data
+  hourly_request <- noaa_stage2() %>%
+    filter(site_id %in% sites,
+           variable %in% c("air_pressure", "air_temperature", "precipitation_flux",
+                           "relative_humidity"),
+           start_date == forecast_start_date)
   
-  # Read in the six-hour forecasts
-  all_forecasts <- map(.x = seq(from = as_date("2021-01-01"),
-                                to = as_date("2021-09-30"),
-                                by = "day"),
-                       .f = ~ stack_noaa(dir = "data/noaa_forecasts/",
-                                         forecast_date = .x,
-                                         model = "NOAAGEFS_6hr"))
+  hourly_data <- hourly_request %>%
+    collect()
   
-  # Compile all forecast data into a single dataframe
-  forecast_df <- map_df(.x = all_forecasts,
-                        .f = ~ .)
+  return(hourly_data)
   
-  return(forecast_df)
 }
+
 
 
 # Function to aggregate downloaded NOAA GEFS by day and ensemble member. Code
@@ -1495,17 +1487,17 @@ aggregate_noaa <- function(start_date, end_date, target_sites, noaa_forecast) {
   # Unit notes based on netCDF file:
   # precipitation_flux units: kgm-2s-1 (kg rain passing through 1mx1m square each second)
   # air_temperature units: K
-  noaa_clean <- noaa_forecast %>% 
+  noaa_clean <- noaa_forecast %>%
+    select(site_id, predicted, variable, ensemble, start_date, time) %>%
+    pivot_wider(names_from = "variable", values_from = "predicted")  %>%
     mutate(date = as_date(time),
            relative_humidity = relative_humidity * 100,
            air_temperature = conv_unit(x = air_temperature, from = "K", to = "C"),
-           vpd = RHtoVPD(RH = relative_humidity, TdegC = air_temperature)) %>%
-    rename(site_id = site_id) %>% 
-    mutate(ensemble = as.numeric(stringr::str_sub(ensemble, start = 4, end = 6)))
+           vpd = RHtoVPD(RH = relative_humidity, TdegC = air_temperature))
   
   # Major summary stats
   noaa_future_mean <- noaa_clean %>%
-    group_by(site_id, date, runStartDate, runEndDate, ensemble) %>% 
+    group_by(site_id, start_date, date, ensemble) %>%
     summarize(min_temp = min(air_temperature, na.rm = TRUE),
               mean_temp = mean(air_temperature, na.rm = TRUE),
               max_temp = max(air_temperature, na.rm = TRUE),
@@ -1521,13 +1513,13 @@ aggregate_noaa <- function(start_date, end_date, target_sites, noaa_forecast) {
   # and then add together periods of the day
   precip_sum <- noaa_clean %>%
     mutate(precip_accum = 360 * precipitation_flux) %>%
-    group_by(site_id, date, runStartDate, runEndDate, ensemble) %>% 
+    group_by(site_id, start_date, date, ensemble) %>%
     summarize(sum_precip_mm = sum(precip_accum, na.rm = TRUE)) %>%
     ungroup()
   
   noaa_daily <- full_join(x = noaa_future_mean,
                           y = precip_sum,
-                          by = c("site_id", "date", "runStartDate", "runEndDate", "ensemble"))
+                          by = c("site_id", "date", "start_date", "ensemble"))
   
   # Check if anything is missing:
   noaa_all_dates <- full_join(x = all_dates,
@@ -1546,6 +1538,22 @@ aggregate_noaa <- function(start_date, end_date, target_sites, noaa_forecast) {
   }
   
   return(noaa_all_dates)
+  
+}
+
+# Combine the daily NOAA forecast with the historical tick data
+reconcile_noaa_timeseries <- function(interpolated_tick_data = interpolated_tick_data,
+                                      daily_noaa_forecast = daily_noaa_forecast){
+  
+  # 1. Make NOAA weekly
+  
+  # 2.  Interpolate NOAA
+  
+  # 3. Fill out the structure of the remaining columns
+  
+  # 4. Combine the timeseries
+  
+  
   
 }
 
