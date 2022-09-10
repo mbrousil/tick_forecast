@@ -45,3 +45,4 @@ data/gridmet/
 data/high_temporal_res/
 data/noaa_forecasts/
 data/2021_climate_forecast.csv
+code_sandbox.R

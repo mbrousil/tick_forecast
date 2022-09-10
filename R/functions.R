@@ -1541,23 +1541,6 @@ aggregate_noaa <- function(start_date, end_date, target_sites, noaa_forecast) {
   
 }
 
-# Combine the daily NOAA forecast with the historical tick data
-reconcile_noaa_timeseries <- function(interpolated_tick_data = interpolated_tick_data,
-                                      daily_noaa_forecast = daily_noaa_forecast){
-  
-  # 1. Make NOAA weekly
-  
-  # 2.  Interpolate NOAA
-  
-  # 3. Fill out the structure of the remaining columns
-  
-  # 4. Combine the timeseries
-  
-  
-  
-}
-
-
 # Fit fable-based models
 fit_fable <- function(training_tsibble, test_tsibble, model_formula){
   
@@ -1906,22 +1889,268 @@ plot_test_forecasts <- function(full_predictions){
 }
 
 
+add_daily_forecast_lags <- function(daily_noaa_forecast,
+                                    interpolated_daily_weather,
+                                    forecast_start_date){
+  
+  # Make a dataset that combines ~recent observed data with the NOAA data, and
+  # crosses the observed data with the ensemble numbers so that it can all be
+  # joined
+  combined_daily <- map_dfr(.x = 1:31,
+                            .f = ~ interpolated_daily_weather %>%
+                              filter(date >= forecast_start_date - weeks(51),
+                                     date < forecast_start_date) %>%
+                              mutate(ensemble = .x)) %>%
+    rowwise() %>%
+    mutate(start_date = as.character(forecast_start_date),
+           data_type = "Observed", mean_temp = mean(c(min_temp, max_temp))) %>%
+    select(site_id, date, start_date, ensemble, min_temp, mean_temp, max_temp,
+           min_rh = rh_min, max_rh = rh_max, mean_vpd = vpd, sum_precip_mm) %>%
+    ungroup() %>%
+    bind_rows(., daily_noaa_forecast)
+  
+  # Last day of obs before forecast data begins
+  last_observed <- combined_daily %>%
+    filter(date == forecast_start_date - days(1))
+  
+  # Top off the NOAA forecast with the conditions the day before the forecast
+  daily_forecast_lagged <- bind_rows(last_observed, daily_noaa_forecast) %>%
+    mutate(data_type = "Forecasted") %>%
+    group_by(site_id, ensemble) %>%
+    arrange(date) %>%
+    mutate(rh_min_lag = lag(min_rh, 1L),
+           vpd_lag = lag(mean_vpd, 1L),
+           sum_precip_mm_lag = lag(sum_precip_mm, 1L),
+           continuity_check = as.numeric(difftime(time1 = date, time2 = lag(date, 1L))),
+           across(.cols = contains("_lag"),
+                  .fns = ~if_else(condition = continuity_check > 1,
+                                  true = NA_real_,
+                                  false = .))) %>%
+    ungroup() %>%
+    arrange(site_id, date) %>%
+    # Only keep the forecasted stuff
+    filter(date >= forecast_start_date)
+  
+  return(list(
+    daily_forecast_lagged = daily_forecast_lagged,
+    combined_daily = combined_daily))
+  
+}
+
+
+# Calculate degree days for NOAA forecast
+forecast_degree_days <- function(combined_daily,
+                                 base_temp,
+                                 forecast_start_date){
+  
+  # Daily degree day calculations
+  dd_fractions <- combined_daily %>%
+    mutate(iso_year = year(date)) %>%
+    arrange(site_id, ensemble, date) %>%
+    group_by(site_id, ensemble, iso_year) %>%
+    rowwise() %>%
+    # Using equation 1 from Bouzek et al. 2013
+    mutate(dd_mean_temp = mean(c(min_temp, max_temp)),
+           dd = if_else(condition = dd_mean_temp < base_temp,
+                        true = 0,
+                        false = dd_mean_temp - base_temp)) %>%
+    ungroup()
+  
+  # Now make new columns:
+  # thirty_day_dd: The 30-day sum of DDs
+  # lag_thirty_day_dd: Same as above, but lagged one day
+  # lag_thirty_day_dd_*: Indicates 30-day sums, but from the specified num. weeks
+  #   previous (i.e., indicative of the previous year)
+  # cume_dd: The cumulative sum of DDs since Jan 01
+  dd_aggregations <- dd_fractions %>%
+    arrange(site_id, ensemble, date) %>%
+    group_by(site_id, ensemble) %>%
+    mutate(thirty_day_dd = rollsum(x = dd,
+                                   # 30 days
+                                   k = 30,
+                                   # Indices with too few data points = NA
+                                   fill = NA,
+                                   # Move left to right
+                                   align = "right"),
+           seven_day_dd = rollsum(x = dd,
+                                  k = 7,
+                                  fill = NA,
+                                  align = "right"),
+           lag_thirty_day_dd = lag(x = thirty_day_dd, n = 1L),
+           lag_seven_day_dd = lag(x = seven_day_dd, n = 1L),
+           lag_thirty_day_dd_34wk = lag(x = thirty_day_dd, n = 34L),
+           lag_thirty_day_dd_50wk = lag(x = thirty_day_dd, n = 50L),
+           lag_thirty_day_dd_42wk = lag(x = thirty_day_dd, n = 42L)) %>%
+    group_by(site_id, ensemble, iso_year) %>%
+    mutate(cume_dd = cumsum(dd),
+           temp_source = "Forecasted") %>%
+    ungroup()
+  
+  # DD info needed for the workflow
+  dd_export <- dd_aggregations %>%
+    dplyr::select(site_id, ensemble, date, iso_year, temp_source, contains("dd")) 
+  
+  return(dd_export)
+  
+}
+
+# Add the degree day (and "chill day") metrics to the dataset and export a 
+# weekly-level summary dataset
+aggregate_forecast <- function(daily_forecast_lagged,
+                               degree_day_forecast,
+                               forecast_start_date){
+  
+  daily_weather_w_dd <- left_join(x = daily_forecast_lagged %>%
+                                    mutate(iso_year = year(date)),
+                                  y = degree_day_forecast %>%
+                                    filter(date >= forecast_start_date),
+                                  by = c("site_id", "ensemble", "date",
+                                         "iso_year", "data_type" = "temp_source")) %>%
+    # Re-run the year column to make sure no NAs and add the ISO week
+    mutate(year = year(date),
+           iso_year = isoyear(date),
+           iso_week = isoweek(date)) %>%
+    # Rearrange cols
+    dplyr::select(site_id, date, year, iso_year, iso_week,
+                  everything())
+  
+  # Going to grab lagged values by week so that we can use the previous week's
+  # (end of week) values for two of the DD variables
+  dd_weekly <- degree_day_forecast %>%
+    group_by(site_id, ensemble, iso_year = isoyear(date), iso_week = isoweek(date)) %>%
+    filter(date == max(date)) %>%
+    dplyr::select(thirty_day_dd, cume_dd) %>%
+    ungroup() 
+  
+  dd_weekly_lag <- dd_weekly %>%
+    group_by(site_id, ensemble) %>%
+    # Get the final value of 30-day DD and cume DD from the previous week
+    mutate(prev_week_30d_dd = lag(thirty_day_dd),
+           prev_week_cume_dd = lag(cume_dd)) %>%
+    ungroup() %>%
+    dplyr::select(-c(thirty_day_dd, cume_dd))
+  
+  # Now we need to aggregate the dataset to one value per MMWR week
+  weekly_weather <- daily_weather_w_dd %>%
+    # Now we aggregate by site*year*week:
+    group_by(site_id, ensemble, iso_year, iso_week) %>%
+    summarize(
+      mean_temp = mean(mean_temp, na.rm = TRUE),
+      min_temp = min(min_temp, na.rm = TRUE),
+      max_temp = max(max_temp, na.rm = TRUE),
+      min_rh = min(min_rh, na.rm = TRUE),
+      max_rh = max(max_rh, na.rm = TRUE),
+      mean_vpd = mean(mean_vpd, na.rm = TRUE),
+      mean_precip_mm = mean(sum_precip_mm, na.rm = TRUE),
+      sum_precip_mm = sum(sum_precip_mm, na.rm = TRUE),
+      dd = mean(dd, na.rm = TRUE),
+      thirty_day_dd = mean(thirty_day_dd, na.rm = TRUE),
+      lag_thirty_day_dd_34wk = mean(lag_thirty_day_dd_34wk, na.rm = TRUE),
+      lag_thirty_day_dd_42wk = mean(lag_thirty_day_dd_42wk, na.rm = TRUE),
+      lag_thirty_day_dd_50wk = mean(lag_thirty_day_dd_50wk, na.rm = TRUE)) %>%
+    ungroup() %>%
+    # Join in the remaining DD weekly dataframe
+    left_join(x = ., y = dd_weekly_lag,
+              by = c("site_id", "ensemble", "iso_year", "iso_week")) %>%
+    mutate(date = paste0(iso_year, "-W",
+                         str_pad(string = iso_week, width = 2, side = "left", pad = "0"),
+                         "-1"),
+           date = ISOweek2date(date),
+           jd = yday(date))
+  
+  
+  return(weekly_weather)
+}
 
 
 
-# # Forecast to test time period and plot
-# tick_forecasts <- trained_models %>%
-#   forecast(new_data = test_tsibble) %>%
-#   autoplot(test_tsibble, level = NULL) +
-#   facet_wrap(vars(site_id), ncol = 2, scales = "free_y") +
-#   theme_bw()
-# 
-# forecast_out_path <- "figures/tick_fable_forecasts.png"
-# 
-# ggsave(filename = forecast_out_path,
-#        plot = tick_forecasts, device = "png",
-#        width = 6, height = 8, units = "in")
+lag_weekly_forecast <- function(weekly_forecast_summary, 
+                                forecast_start_date, 
+                                interpolated_tick_data){
+  
+  # Combine the weekly forecasted data with the weekly observed data (leading up
+  # to the forecast date). First add ensemble info to observed
+  combined_weekly <- bind_rows(map_dfr(.x = 1:31,
+                                       .f = ~ as_tibble(interpolated_tick_data) %>%
+                                         select(site_id, date, amam_filled, mean_vpd) %>%
+                                         filter(date < forecast_start_date) %>%
+                                         mutate(ensemble = .x)),
+                               weekly_forecast_summary %>%
+                                 mutate(amam_filled = NA_real_)) %>%
+    arrange(site_id, ensemble, date)
+  
+  # Now add the lags to match the observed data
+  forecast_interp_lag <- combined_weekly %>%
+    filter(!is.na(ensemble)) %>%
+    group_by(site_id, ensemble) %>%
+    mutate(
+      # Initial rolling average
+      across(.cols = c(amam_filled, mean_vpd),
+             .f = ~ rollmean(x = .x, k = 4, fill = NA, align = "right"),
+             .names = "{.col}_4wk_rollmean"),
+      # Lag one week
+      across(.cols = c(amam_filled_4wk_rollmean, mean_vpd_4wk_rollmean),
+             .f = ~ lag(x = .x, n = 1L),
+             .names = "{.col}_lag1"),
+      # Lag 50 weeks
+      across(.cols = c(amam_filled_4wk_rollmean, mean_vpd_4wk_rollmean),
+             .f = ~ lag(x = .x, n = 50L),
+             .names = "{.col}_lag50"),
+      # Short term lags of counts
+      amam_lag1 = lag(amam_filled, n = 1L),
+      amam_lag2 = lag(amam_filled, n = 2L),
+      amam_lag3 = lag(amam_filled, n = 3L),
+      amam_lag4 = lag(amam_filled, n = 4L),
+      # There's new NAs in these new columns due to the lagging process, so interpolate
+      across(.cols = c(contains("rollmean_lag50"), contains("rollmean_lag1")),
+             .fns = ~ na_interpolation(., option = "linear"))) %>%
+    ungroup() %>%
+    rename(
+      amam_4wk_rollmean_lag1 = amam_filled_4wk_rollmean_lag1, 
+      amam_4wk_rollmean_lag50 = amam_filled_4wk_rollmean_lag50, 
+      dd_30d_rollsum_lag34 = lag_thirty_day_dd_34wk, 
+      dd_30d_rollsum_lag42 = lag_thirty_day_dd_42wk, 
+      dd_30d_rollsum_lag50 = lag_thirty_day_dd_50wk, 
+      dd_30d_rollsum_prev_week = prev_week_30d_dd) %>%
+    select(-c(amam_filled_4wk_rollmean, mean_vpd_4wk_rollmean)) %>%
+    filter(date >= forecast_start_date)
+  
+  return(forecast_interp_lag)
+}
 
+
+# Combine the weekly NOAA forecast with the historical tick data to create our
+# forecast
+reconcile_timeseries <- function(weekly_forecast_lagged,
+                                 forecast_start_date,
+                                 interpolated_tick_data,
+                                 degree_day_forecast){
+  
+  # Minor formatting changes to both forecasted and observed datasets before then
+  # stacking them
+  new_timeseries <- bind_rows(
+    weekly_forecast_lagged %>%
+      rename(rh_min = min_rh,
+             rh_max = max_rh,
+             cume_dd_prev_week = prev_week_cume_dd) %>%
+      mutate(iso_week_num = iso_week,
+             # Overwrite ISO week with string
+             iso_week = paste0(iso_year, "-W",
+                               str_pad(string = iso_week_num, width = 2, side = "left", pad = "0"),
+                               "-1")) %>%
+      left_join(x = .,
+                y = degree_day_forecast %>%
+                  select(site_id, ensemble, date, dd_rollsum_prev_week = lag_seven_day_dd),
+                by = c("site_id", "date", "ensemble")),
+    interpolated_tick_data %>%
+      as_tibble() %>%
+      select(-c(amblyomma_americanum, cume_cd_prev_winter, tick_interp_flag))
+  ) %>%
+    arrange(site_id, date, ensemble)
+  
+  return(new_timeseries)
+  
+}
 
 
 

@@ -398,11 +398,42 @@ list(
              packages = c("tidyverse", "plantecophys", "measurements",
                           "lubridate")),
   
+  # Calculate the basic lags needed to get us to the full dataset
+  tar_target(daily_forecast_lagged,
+             add_daily_forecast_lags(daily_noaa_forecast = daily_noaa_forecast,
+                                     interpolated_daily_weather = interpolated_daily_weather,
+                                     forecast_start_date = forecast_start_date)),
+  
+  # Calculate and aggregate degree day info for forecasted time period
+  tar_target(degree_day_forecast,
+             forecast_degree_days(
+               combined_daily = daily_forecast_lagged$combined_daily,
+               # The base temperature (C) to use for DD calculation:
+               base_temp = 0,
+               forecast_start_date = forecast_start_date),
+             packages = c("tidyverse", "lubridate", "zoo")),
+  
+  # Add degree day data and create weekly-level dataset
+  tar_target(weekly_forecast_summary,
+             aggregate_forecast(daily_forecast_lagged = daily_forecast_lagged$daily_forecast_lagged,
+                                degree_day_forecast = degree_day_forecast,
+                                forecast_start_date = forecast_start_date),
+             packages = c("tidyverse", "lubridate", "ISOweek")),
+  
+  # Add more complex lags to the dataset
+  tar_target(weekly_forecast_lagged,
+             lag_weekly_forecast(weekly_forecast_summary = weekly_forecast_summary, 
+                                 forecast_start_date = forecast_start_date, 
+                                 interpolated_tick_data = interpolated_tick_data$dataset),
+             packages = c("tidyverse", "lubridate", "zoo", "imputeTS")),
+  
   # Reconcile forecasted dataset structure with observed dataset structure
-  tar_target(observed_plus_forecasted_data,
-             reconcile_noaa_timeseries(interpolated_tick_data = interpolated_tick_data,
-                                       daily_noaa_forecast = daily_noaa_forecast),
-             packages = c()),
+  tar_target(reconciled_timeseries,
+             reconcile_timeseries(weekly_forecast_lagged = weekly_forecast_lagged,
+                                  forecast_start_date = forecast_start_date,
+                                  interpolated_tick_data = interpolated_tick_data$dataset,
+                                  degree_day_forecast = degree_day_forecast),
+             packages = c("tidyverse", "lubridate", "ISOweek", "zoo", "imputeTS")),
   
   
   # 3. Modeling -------------------------------------------------------------
