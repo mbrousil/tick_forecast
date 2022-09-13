@@ -1579,10 +1579,12 @@ fit_lightgbm <- function(training_tsibble, test_tsibble, model_formula){
   # modeled separately
   tick_train_list <- training_tsibble %>%
     as_tibble() %>%
+    select(-contains("_cd_"), tick_interp_flag) %>%
     split(f = .$site_id)
   
   tick_test_list <- test_tsibble %>%
     as_tibble() %>%
+    select(-contains("_cd_"), tick_interp_flag) %>%
     split(f = .$site_id)
   
   
@@ -1596,6 +1598,23 @@ fit_lightgbm <- function(training_tsibble, test_tsibble, model_formula){
                              fit(
                                formula = model_formula, 
                                data = .x))
+  
+  # Export these model fits
+  # See https://stackoverflow.com/questions/72027360/how-to-save-tidymodels-lightgbm-model-for-reuse
+  walk2(.x = standard_lgb_fits,
+        .y = names(standard_lgb_fits),
+        .f = ~ lightgbm::saveRDS.lgb.Booster(object = .x$fit,
+                                             file = paste0("data/",
+                                                           .y,
+                                                           "_std_lgb_fit.rds")))
+  
+  walk2(.x = standard_lgb_fits,
+        .y = names(standard_lgb_fits),
+        .f = ~saveRDS(object = .x,
+                      file = paste0("data/",
+                                    .y,
+                                    "_std_lgb_fit_parsnip.rds")))
+  
   
   # We'll only get point estimates, not intervals for lightgbm method
   standard_lgb_predicts <- pmap(.l = list(..1 = standard_lgb_fits,
@@ -1636,9 +1655,8 @@ fit_lightgbm <- function(training_tsibble, test_tsibble, model_formula){
                                       dd, thirty_day_dd, dd_30d_rollsum_lag34,
                                       dd_30d_rollsum_lag42, dd_30d_rollsum_lag50,
                                       dd_30d_rollsum_prev_week, cume_dd_prev_week,
-                                      cume_cd_prev_winter,
-                                      dd_rollsum_prev_week,
-                                      tick_interp_flag, amam_4wk_rollmean_lag1,
+                                      # cume_cd_prev_winter, tick_interp_flag
+                                      dd_rollsum_prev_week, amam_4wk_rollmean_lag1,
                                       mean_vpd_4wk_rollmean_lag1, amam_4wk_rollmean_lag50,
                                       mean_vpd_4wk_rollmean_lag50, contains("amam_lag")))
   
@@ -1654,8 +1672,8 @@ fit_lightgbm <- function(training_tsibble, test_tsibble, model_formula){
                                      dd, thirty_day_dd, dd_30d_rollsum_lag34,
                                      dd_30d_rollsum_lag42, dd_30d_rollsum_lag50,
                                      dd_30d_rollsum_prev_week, cume_dd_prev_week,
-                                     cume_cd_prev_winter, dd_rollsum_prev_week,
-                                     tick_interp_flag, amam_4wk_rollmean_lag1,
+                                     # cume_cd_prev_winter, tick_interp_flag
+                                     dd_rollsum_prev_week, amam_4wk_rollmean_lag1,
                                      mean_vpd_4wk_rollmean_lag1, amam_4wk_rollmean_lag50,
                                      mean_vpd_4wk_rollmean_lag50, contains("amam_lag")))
   
@@ -1707,6 +1725,20 @@ fit_lightgbm <- function(training_tsibble, test_tsibble, model_formula){
          plot = full_lgb_panel_imp, device = "png",
          width = 16, height = 12, units = "in")
   
+  
+  walk2(.x = full_lgb_fits,
+        .y = names(full_lgb_fits),
+        .f = ~ lightgbm::saveRDS.lgb.Booster(object = .x$fit,
+                                             file = paste0("data/",
+                                                           .y,
+                                                           "_full_lgb_fit.rds")))
+  walk2(.x = full_lgb_fits,
+        .y = names(full_lgb_fits),
+        .f = ~saveRDS(object = .x,
+                      file = paste0("data/",
+                                    .y,
+                                    "_full_lgb_fit_parsnip.rds")))
+  
   # Predictions from expanded lightGBM method:
   full_lgb_predicts <- pmap(.l = list(..1 = full_lgb_fits,
                                       ..2 = expanded_test_list,
@@ -1734,10 +1766,8 @@ fit_lightgbm <- function(training_tsibble, test_tsibble, model_formula){
     expanded_lgb_test_data = expanded_test_list,
     importance_out_path = importance_out_path,
     std_model_accuracy = standard_lgb_accuracy,
-    std_models = standard_lgb_fits,
     standard_lgb_predictions = standard_lgb_predicts,
     full_model_accuracy = full_lgb_accuracy,
-    full_models = full_lgb_fits,
     full_lgb_predictions = full_lgb_predicts
   ))
   
