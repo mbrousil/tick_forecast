@@ -767,11 +767,11 @@ join_ticks_with_weather <- function(weekly_weather_summary,
   ticks_w_weather <- left_join(x = weekly_weather_summary %>%
                                  rename(iso_week_num = iso_week),
                                y = tick_counts %>%
-                                 mutate(iso_year = year(time)),
+                                 mutate(iso_year = year(datetime)),
                                by = c("site_id" = "site_id",
                                       "iso_year",
                                       "iso_week_num")) %>%
-    dplyr::select(-time) %>%
+    dplyr::select(-datetime) %>%
     # Add column with date of MMWR week start
     mutate(date = paste0(iso_year, "-W",
                          str_pad(string = iso_week_num, width = 2, side = "left", pad = "0"),
@@ -797,7 +797,7 @@ interpolate_dataset <- function(ticks_w_weather, tick_counts){
   # Earliest observations from each site, which will be used to filter the results
   tick_start_dates <- tick_counts %>%
     group_by(site_id = site_id) %>%
-    summarize(start_date = min(time)) %>%
+    summarize(start_date = min(datetime)) %>%
     ungroup()
   
   # Create a timeseries object for interpolation

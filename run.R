@@ -1,3 +1,5 @@
+# targets::tar_destroy(ask = FALSE)
+
 #  Run the workflow:
 
 targets::tar_watch()

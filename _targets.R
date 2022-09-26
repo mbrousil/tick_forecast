@@ -36,7 +36,7 @@ list(
   tar_target(tick_counts,
              readr::read_csv("https://data.ecoforecast.org/neon4cast-targets/ticks/ticks-targets.csv.gz",
                              guess_max = 1e6) %>%
-               mutate(iso_week_num = isoweek(time)) %>%
+               mutate(iso_week_num = isoweek(datetime)) %>%
                pivot_wider(names_from = "variable", values_from = "observed")),
   
   # Note, these steps take an hour or more:
@@ -232,8 +232,8 @@ list(
                # event that we used lagged variables similar to some studies)
                date_summary <- tick_counts %>%
                  group_by(site_id) %>%
-                 summarize(min_date = min(time),
-                           max_date = max(time)) %>%
+                 summarize(min_date = min(datetime),
+                           max_date = max(datetime)) %>%
                  mutate(min_year = year(min_date),
                         max_year = year(max_date),
                         start_date = ymd(paste0(min_year, "-01-01")) - years(1),
