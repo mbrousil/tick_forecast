@@ -479,10 +479,21 @@ list(
   tar_target(combined_test_set_forecasts,
              plot_test_forecasts(full_predictions = model_averaging_test$full_predictions)),
   
-  # tar_target(production_models),
   
   # 4. Forecasting ----------------------------------------------------------
   
+  # Produce a forecast (incl. weighted avg.) with fable methods
+  tar_target(short_term_fable_forecast,
+             produce_fable_forecast(target_sites = target_sites,
+                                    forecast_start_date = forecast_start_date,
+                                    reconciled_timeseries = reconciled_timeseries,
+                                    fable_accuracy = fable_fits$model_accuracy,
+                                    fable_mods = fable_fits$models)),
+  
+  # Check the forecast and format for submission
+  tar_target(formatted_forecasts,
+             clean_and_format_forecasts(short_term_fable_forecast,
+                                        forecast_start_date)),
   
   
   # 5. Diagnostic plots for the workflow ------------------------------------
@@ -750,6 +761,10 @@ list(
   # Model-related
   tar_file(test_set_plots,
            combined_test_set_forecasts),
+  
+  # Forecasts
+  tar_files(forecast_files,
+            formatted_forecasts),
   
   # Documentation and metadata
   tar_file(dataset_overview_path,
