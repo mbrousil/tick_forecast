@@ -489,7 +489,8 @@ list(
                                     forecast_start_date = forecast_start_date,
                                     reconciled_timeseries = reconciled_timeseries,
                                     fable_accuracy = fable_fits$model_accuracy,
-                                    fable_mods = fable_fits$models)),
+                                    fable_mods = fable_fits$models),
+             packages = c("tidyverse", "lubridate", "lubridate", "fable", "fable.prophet")),
   
   # Check the forecast and format for submission
   tar_target(formatted_forecasts,

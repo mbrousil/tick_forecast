@@ -4,69 +4,31 @@ library(targets)
 library(tidyverse)
 library(lubridate)
 
-tar_load(short_term_fable_forecast)
+# Plot forecasts
+forecasts <- map_df(.x = list.files(path = "data/tick_forecasts/",
+                                    pattern = ".csv",
+                                    full.names = TRUE),
+                    .f = read_csv)
 
-tar_load(forecast_start_date)
+forecasts %>%
+  group_by(datetime, site_id, model_id) %>%
+  summarize(min_pred = min(predicted),
+            max_pred = max(predicted),
+            mean_pred = mean(predicted)) %>%
+  ggplot() +
+  geom_linerange(aes(x = datetime, y = mean_pred, ymin = min_pred, ymax = max_pred,
+                     color = model_id)) +
+  # geom_point(aes(x = datetime, y = mean_pred, color = model_id)) +
+  geom_line(aes(x = datetime, y = mean_pred, color = model_id)) +
+  facet_wrap(vars(site_id), scales = "free_y") +
+  xlab("Date") +
+  ylab("Predicted A. americanum") +
+  ggtitle("Tick predictions for 2021-09-27", subtitle = "Ranges are min/max; lines are means") +
+  theme_bw()
 
 
-clean_and_format_forecasts <- function(short_term_fable_forecast,
-                                       forecast_start_date){
-  
-  full_fable <- short_term_fable_forecast$full_fable_forecast
-  
-  avg_list <- short_term_fable_forecast$averaged_forecast
-  
-  fable_forecast_formatted <- full_fable %>%
-    # Create extra cols needed
-    mutate(family = "ensemble",
-           variable = "amblyomma_americanum",
-           forecast_start_date = forecast_start_date) %>%
-    # Arrange and name as needed
-    select(datetime = date, reference_datetime = forecast_start_date, site_id,
-           family, parameter = ensemble, variable, predicted = .mean,
-           model_id = .model) %>%
-    # Replace negative values with 0
-    mutate(predicted = if_else(condition = predicted < 0,
-                               true = 0,
-                               false = predicted))
-  
-  # Export forecasts
-  walk(.x = unique(fable_forecast_formatted$model_id),
-       .f = ~ {
-         
-         # Filename format:
-         # theme_name-year-month-day-model_id.csv
-         filename <- paste0("data/forecasts/ticks-",
-                            forecast_start_date,
-                            "-", .x,
-                            ".csv")
-         
-         write_csv(x = fable_forecast_formatted %>%
-                     filter(model_id == .x),
-                   file = filename)
-         
-       })
-  
-  
-  avg_forecast_formatted <- map_df(.x = avg_list,
-                                   .f = ~ .x) %>%
-    mutate(family = "ensemble",
-           variable = "amblyomma_americanum",
-           model_id = "top_3_weighted_average",
-           forecast_start_date = forecast_start_date) %>%
-    select(datetime = date, reference_datetime = forecast_start_date, site_id,
-           family, parameter = ensemble, variable, predicted = top_3_w_mean_pred,
-           model_id) %>%
-    mutate(predicted = if_else(condition = predicted < 0,
-                               true = 0,
-                               false = predicted))
-  
-  top_3_filename <- paste0("data/forecasts/ticks-",
-                           forecast_start_date,
-                           "-top_3_weighted_average",
-                           ".csv")
-  
-  write_csv(x = avg_forecast_formatted,
-            file = top_3_filename)
-  
-}
+
+
+
+
+
