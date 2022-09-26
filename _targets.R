@@ -381,7 +381,8 @@ list(
                return(forecast_start_date)
                
              },
-             packages = c("tidyverse", "ISOweek", "lubridate")),
+             packages = c("tidyverse", "ISOweek", "lubridate"),
+             cue = tar_cue(mode = "always")),
   
   # Get the forecasted weather dataset
   tar_target(noaa_forecast,
