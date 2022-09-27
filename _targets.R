@@ -497,6 +497,20 @@ list(
              clean_and_format_forecasts(short_term_fable_forecast,
                                         forecast_start_date)),
   
+  # Check forecast formatting
+  tar_target(validated_forecasts,
+             validate_forecasts(file_list = list.files(path = "data/tick_forecasts/",
+                                                       pattern = ".csv",
+                                                       full.names = TRUE)),
+             packages = c("tidyverse", "neon4cast")),
+  
+  # Submit forecasts
+  tar_target(submitted_forecasts,
+             submit_forecasts(auto_submit = FALSE,
+                              validated_forecasts,
+                              forecast_start_date),
+             packages = c("tidyverse", "neon4cast")),
+  
   
   # 5. Diagnostic plots for the workflow ------------------------------------
   
@@ -596,71 +610,6 @@ list(
                                    gridmet_rh_max = gridmet_rh_max,
                                    gridmet_precip = gridmet_precip)),
   
-  # Plot NOAA weather forecasts to check for gaps
-  # tar_target(noaa_temp_plot,
-  #            {
-  #              out_path <- "figures/noaa_temp_completion.png"
-  #              
-  #              temp_plot <- noaa_forecast %>%
-  #                ggplot() +
-  #                geom_point(aes(x = time, y = air_temperature)) +
-  #                facet_wrap(vars(site_id)) +
-  #                theme_bw()
-  #              
-  #              ggsave(file = out_path, plot = temp_plot, height = 6, width = 9,
-  #                     units = "in", dev = "png")
-  #              
-  #              return(out_path)
-  #            }),
-  # 
-  # tar_target(noaa_pressure_plot,
-  #            {
-  #              out_path <- "figures/noaa_pressure_completion.png"
-  #              
-  #              press_plot <- noaa_forecast %>%
-  #                ggplot() +
-  #                geom_point(aes(x = time, y = air_pressure)) +
-  #                facet_wrap(vars(site_id)) +
-  #                theme_bw()
-  #              
-  #              ggsave(file = out_path, plot = press_plot, height = 6, width = 9,
-  #                     units = "in", dev = "png")
-  #              
-  #              return(out_path)
-  #            }),
-  # 
-  # tar_target(noaa_rh_plot,
-  #            {
-  #              out_path <- "figures/noaa_rh_completion.png"
-  #              
-  #              rh_plot <- noaa_forecast %>%
-  #                ggplot() +
-  #                geom_point(aes(x = time, y = relative_humidity)) +
-  #                facet_wrap(vars(site_id)) +
-  #                theme_bw()
-  #              
-  #              ggsave(file = out_path, plot = rh_plot, height = 6, width = 9,
-  #                     units = "in", dev = "png")
-  #              
-  #              return(out_path)
-  #            }),
-  # 
-  # tar_target(noaa_precip_plot,
-  #            {
-  #              out_path <- "figures/noaa_precip_completion.png"
-  #              
-  #              precip_plot <- noaa_forecast %>%
-  #                ggplot() +
-  #                geom_point(aes(x = time, y = precipitation_flux)) +
-  #                facet_wrap(vars(site_id)) +
-  #                theme_bw()
-  #              
-  #              ggsave(file = out_path, plot = precip_plot, height = 6, width = 9,
-  #                     units = "in", dev = "png")
-  #              
-  #              return(out_path)
-  #            }),
-  # 
   
   # 6. Reference documents --------------------------------------------------
   

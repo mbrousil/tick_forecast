@@ -2313,6 +2313,42 @@ clean_and_format_forecasts <- function(short_term_fable_forecast,
   
 }
 
+# Check to make sure forecasts are formatted correctly before submitting
+validate_forecasts <- function(file_list){
+  
+  # Run forecast files through EFI validation function
+  validation_list <- map_lgl(.x = file_list,
+                             .f = ~ forecast_output_validator(forecast_file = .x,
+                                                              target_variables = "amblyomma_americanum",
+                                                              theme_names = "ticks"))
+  
+  # Are all forecasts valid?
+  return(all(validation_list))
+  
+}
+
+# Submit forecasts if they meet requirements and if we give it the "go"
+submit_forecasts <- function(auto_submit = FALSE,
+                             validated_forecasts,
+                             forecast_start_date){
+  
+  if( (auto_submit == TRUE) & (validated_forecasts == TRUE) ){
+    
+    # Then submit forecasts matching the date of the current forecast start
+    submitted <- map(.x = list.files(path = "data/tick_forecasts/",
+                                     pattern = ".csv",
+                                     full.names = TRUE) %>%
+                       grep(pattern = paste0("data/tick_forecasts/ticks-",
+                                             forecast_start_date),
+                            value = TRUE),
+                     .f = ~neon4cast::submit(forecast_file = .x,
+                                             metadata = NULL,
+                                             ask = FALSE))
+  }
+  
+  return(submitted)
+  
+}
 
 
 
